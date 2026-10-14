@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.2] - 2026-10-14
+
+### Added
+- feat(ci): automate CHANGELOG.md generation and GitHub release notes extraction
+- feat(ci): add version bumping scripts for patch, minor, and major release automation
+
+---
+
 ## [1.2.0] - 2026-10-14
 
 ### Added
