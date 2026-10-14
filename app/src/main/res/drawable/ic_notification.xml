@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer Circle -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M54,18 A36,36 0 1,0 54,90 A36,36 0 1,0 54,18 Z"
+        android:strokeWidth="4"
+        android:strokeColor="#FFFFFFFF" />
+
+    <!-- USB Connector Metallic Plug Top with Pins Cutout -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M44,30 H64 V44 H44 Z M48,34 V40 H51 V34 Z M57,34 V40 H60 V34 Z" />
+
+    <!-- USB Main Body Base with Shell Prompt Cutout -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M40,46 H68 V74 A6,6 0 0,1 62,80 H46 A6,6 0 0,1 40,74 Z M45,54 L45,56.5 L49.5,60 L45,63.5 L45,66 L53,60 Z M55,63.5 V66 H62 V63.5 Z" />
+
+</vector>
