@@ -4,13 +4,13 @@ plugins {
 }
 
 android {
-    namespace = "com.net2software.mobile.autousb"
+    namespace = "com.cybersafetyid.mobile.autousb"
     compileSdk {
         version = release(37)
     }
 
     defaultConfig {
-        applicationId = "com.net2software.mobile.autousb"
+        applicationId = "com.cybersafetyid.mobile.autousb"
         minSdk = 21
         targetSdk = 37
         versionCode = 3
