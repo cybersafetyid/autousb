@@ -16,7 +16,7 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
     <uses-sdk
-        tools:overrideLibrary="androidx.compose.material, androidx.compose.material3, androidx.compose.ui, androidx.compose.ui.tooling, androidx.compose.ui.tooling.data, androidx.compose.ui.tooling.preview, androidx.compose.material.icons, androidx.compose.animation, androidx.compose.animation.core, androidx.compose.foundation, androidx.compose.foundation.layout, androidx.compose.runtime, androidx.compose.runtime.annotation, androidx.compose.runtime.retain, androidx.compose.runtime.saveable, androidx.activity, androidx.activity.compose, androidx.activity.ktx, androidx.compose.material.ripple, androidx.lifecycle.runtime, androidx.lifecycle.runtime.ktx, androidx.lifecycle.viewmodel, androidx.lifecycle.viewmodel.compose, androidx.lifecycle.runtime.compose, androidx.lifecycle.livedata.core, androidx.graphics.path, androidx.compose.ui.text, androidx.compose.ui.geometry, androidx.compose.ui.graphics, androidx.compose.ui.unit, androidx.compose.ui.util, androidx.navigationevent, androidx.navigationevent.compose, androidx.customview.poolingcontainer, androidx.savedstate, androidx.core, androidx.core.ktx, androidx.compose.ui.test.manifest, androidx.window.core, androidx.window" />
+        tools:overrideLibrary="rikka.shizuku.aidl, rikka.shizuku.shared, rikka.shizuku.api, rikka.shizuku.provider, rikka.shizuku.ref, rikka.shizuku.shizuku, androidx.compose.material, androidx.compose.material3, androidx.compose.ui, androidx.compose.ui.tooling, androidx.compose.ui.tooling.data, androidx.compose.ui.tooling.preview, androidx.compose.material.icons, androidx.compose.animation, androidx.compose.animation.core, androidx.compose.foundation, androidx.compose.foundation.layout, androidx.compose.runtime, androidx.compose.runtime.annotation, androidx.compose.runtime.retain, androidx.compose.runtime.saveable, androidx.activity, androidx.activity.compose, androidx.activity.ktx, androidx.compose.material.ripple, androidx.lifecycle.runtime, androidx.lifecycle.runtime.ktx, androidx.lifecycle.viewmodel, androidx.lifecycle.viewmodel.compose, androidx.lifecycle.runtime.compose, androidx.lifecycle.livedata.core, androidx.graphics.path, androidx.compose.ui.text, androidx.compose.ui.geometry, androidx.compose.ui.graphics, androidx.compose.ui.unit, androidx.compose.ui.util, androidx.navigationevent, androidx.navigationevent.compose, androidx.customview.poolingcontainer, androidx.savedstate, androidx.core, androidx.core.ktx, androidx.compose.ui.test.manifest, androidx.window.core, androidx.window" />
 
     <application
         android:allowBackup="true"
@@ -63,7 +63,9 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
                 <action android:name="android.intent.action.REBOOT" />
+                <action android:name="android.hardware.usb.action.USB_STATE" />
                 <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_MOUNTED" />

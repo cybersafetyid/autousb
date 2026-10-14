@@ -3,6 +3,7 @@ package com.cybersafetyid.mobile.autousb.receiver
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import com.cybersafetyid.mobile.autousb.MainActivity
 import com.cybersafetyid.mobile.autousb.data.AppPreferences
 import com.cybersafetyid.mobile.autousb.service.AutoUsbService
@@ -15,12 +16,20 @@ import kotlinx.coroutines.launch
 
 class BootReceiver : BroadcastReceiver() {
 
+    private companion object {
+        private const val TAG = "AutoUSB"
+    }
+
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
+        Log.i(TAG, "BootReceiver.onReceive action=$action")
         val prefs = AppPreferences(context)
 
         val isUsbEvent = action == Intent.ACTION_MEDIA_MOUNTED ||
-                action == "android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                action == "android.hardware.usb.action.USB_STATE" ||
+                action == "android.hardware.usb.action.USB_DEVICE_ATTACHED" ||
+                action == "android.hardware.usb.action.USB_ACCESSORY_ATTACHED" ||
+                action == Intent.ACTION_POWER_CONNECTED
 
         val isAutoStartTrigger = action == Intent.ACTION_BOOT_COMPLETED ||
                 action == "android.intent.action.LOCKED_BOOT_COMPLETED" ||
@@ -32,15 +41,19 @@ class BootReceiver : BroadcastReceiver() {
                 isUsbEvent
 
         if (isAutoStartTrigger && prefs.getAutoStartOnBoot()) {
+            Log.i(TAG, "BootReceiver triggering AutoUsbService.startService and launchMainActivity...")
             AutoUsbService.startService(context)
             launchMainActivity(context)
         }
 
         if (isUsbEvent && prefs.getAutoInstallUsbApk()) {
+            Log.i(TAG, "BootReceiver triggering UsbInstaller scanAndInstallApksFromUsb...")
             val pendingResult = goAsync()
             CoroutineScope(Dispatchers.IO).launch {
                 try {
                     UsbInstaller.scanAndInstallApksFromUsb(context, prefs)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in UsbInstaller from BootReceiver: ${e.message}", e)
                 } finally {
                     pendingResult.finish()
                 }
@@ -50,11 +63,13 @@ class BootReceiver : BroadcastReceiver() {
 
     private fun launchMainActivity(context: Context) {
         try {
+            Log.d(TAG, "Attempting standard startActivity for MainActivity...")
             val launchIntent = Intent(context, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             }
             context.startActivity(launchIntent)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "Standard startActivity failed: ${e.message}. Retrying via Root command...")
             CoroutineScope(Dispatchers.IO).launch {
                 try {
                     if (ShellExecutor.isRootAvailable()) {
@@ -64,9 +79,10 @@ class BootReceiver : BroadcastReceiver() {
                             ExecutionMethod.ROOT
                         )
                     }
-                } catch (_: Exception) {}
+                } catch (ex: Exception) {
+                    Log.e(TAG, "Root am start failed: ${ex.message}", ex)
+                }
             }
         }
     }
 }
-

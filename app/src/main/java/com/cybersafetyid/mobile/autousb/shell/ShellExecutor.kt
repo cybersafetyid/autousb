@@ -6,7 +6,9 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.widget.Toast
+import com.cybersafetyid.mobile.autousb.shell.adb.LocalAdbEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
@@ -21,6 +23,8 @@ import java.util.Locale
 
 object ShellExecutor {
 
+    private const val TAG = "AutoUSB"
+
     const val DEFAULT_ADB_SCRIPT = "setprop service.adb.tcp.port 5555\nsetprop persist.adb.tcp.port 5555\nsetprop ctl.restart adbd\nstop adbd\nstart adbd"
 
     @Volatile
@@ -34,15 +38,18 @@ object ShellExecutor {
         if (cachedRootCmd != null) return@withContext true
 
         val candidates = listOf(
-            listOf("su"),
             listOf("su", "0"),
-            listOf("su", "-c", "id"),
+            listOf("/system/xbin/su", "0"),
+            listOf("/system/bin/su", "0"),
+            listOf("su"),
             listOf("/system/xbin/su"),
-            listOf("/system/bin/su")
+            listOf("/system/bin/su"),
+            listOf("su", "-c", "id")
         )
 
         for (cmd in candidates) {
             try {
+                Log.d(TAG, "Testing root candidate: $cmd")
                 val process = ProcessBuilder(cmd).start()
                 val os = DataOutputStream(process.outputStream)
                 val reader = BufferedReader(InputStreamReader(process.inputStream))
@@ -59,30 +66,93 @@ object ShellExecutor {
 
                 val output = outputBuilder.toString()
                 if (exitCode == 0 || output.contains("uid=0")) {
+                    Log.i(TAG, "Root available via command: $cmd (output: $output)")
                     cachedRootCmd = cmd
                     return@withContext true
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.d(TAG, "Root candidate failed ($cmd): ${e.message}")
+            }
         }
+        Log.w(TAG, "No root binary (su) available on device.")
         return@withContext false
+    }
+
+    fun isShizukuAvailable(): Boolean {
+        return ShizukuHelper.isShizukuPermissionGranted()
     }
 
     suspend fun executeCommand(
         script: String,
         preferredMethod: ExecutionMethod,
+        context: Context? = null,
         onLineOutput: ((String) -> Unit)? = null
     ): CommandResult = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
         val isRoot = isRootAvailable()
+        val isShizuku = ShizukuHelper.isShizukuPermissionGranted()
 
-        val effectiveMethod = when (preferredMethod) {
-            ExecutionMethod.AUTO -> if (isRoot) ExecutionMethod.ROOT else ExecutionMethod.NON_ROOT
+        var effectiveMethod = when (preferredMethod) {
+            ExecutionMethod.AUTO -> {
+                when {
+                    isRoot -> ExecutionMethod.ROOT
+                    isShizuku -> ExecutionMethod.SHIZUKU
+                    else -> ExecutionMethod.LOCAL_ADB
+                }
+            }
             ExecutionMethod.ROOT -> ExecutionMethod.ROOT
+            ExecutionMethod.LOCAL_ADB -> ExecutionMethod.LOCAL_ADB
+            ExecutionMethod.SHIZUKU -> ExecutionMethod.SHIZUKU
             ExecutionMethod.NON_ROOT -> ExecutionMethod.NON_ROOT
         }
 
+        Log.i(TAG, "ShellExecutor.executeCommand preferredMethod=$preferredMethod -> effectiveMethod=$effectiveMethod")
+        Log.d(TAG, "Executing script:\n$script")
+
+        if (effectiveMethod == ExecutionMethod.LOCAL_ADB && context != null) {
+            Log.i(TAG, "Executing via LocalAdbEngine over loopback socket...")
+            val adbRes = LocalAdbEngine.executeAdbCommand(
+                context = context,
+                commandString = script,
+                onLineOutput = onLineOutput
+            )
+            if (adbRes.isSuccess) {
+                val duration = System.currentTimeMillis() - startTime
+                Log.i(TAG, "LocalAdbEngine succeeded in ${duration}ms")
+                return@withContext adbRes.copy(durationMs = duration)
+            }
+            Log.w(TAG, "LocalAdbEngine failed, falling back to NON_ROOT shell execution.")
+            effectiveMethod = ExecutionMethod.NON_ROOT
+        }
+
         if (effectiveMethod == ExecutionMethod.ROOT && !isRoot) {
-            val errMsg = "Root permission (su) is required for this command, but Root is not available or denied."
+            if (isShizuku) {
+                effectiveMethod = ExecutionMethod.SHIZUKU
+                Log.i(TAG, "Root unavailable. Falling back to Shizuku ADB execution.")
+                onLineOutput?.invoke("[INFO] Root unavailable. Falling back to Shizuku ADB execution.")
+            } else {
+                val errMsg = "Root permission (su) is required for this command, but Root is not available or denied."
+                Log.e(TAG, errMsg)
+                onLineOutput?.invoke("[ERR] $errMsg")
+                val duration = System.currentTimeMillis() - startTime
+                return@withContext CommandResult(
+                    command = script,
+                    exitCode = 1,
+                    stdout = "",
+                    stderr = errMsg,
+                    executionMethodUsed = ExecutionMethod.ROOT,
+                    durationMs = duration
+                )
+            }
+        }
+
+        if (effectiveMethod == ExecutionMethod.SHIZUKU && !isShizuku) {
+            val errMsg = if (ShizukuHelper.isShizukuInstalled()) {
+                "Shizuku is installed, but permission is not granted. Please grant Shizuku permission in AutoUSB."
+            } else {
+                "Shizuku service is not running or not installed. Please install and start Shizuku."
+            }
+            Log.e(TAG, errMsg)
             onLineOutput?.invoke("[ERR] $errMsg")
             val duration = System.currentTimeMillis() - startTime
             return@withContext CommandResult(
@@ -90,22 +160,129 @@ object ShellExecutor {
                 exitCode = 1,
                 stdout = "",
                 stderr = errMsg,
-                executionMethodUsed = ExecutionMethod.ROOT,
+                executionMethodUsed = ExecutionMethod.SHIZUKU,
                 durationMs = duration
             )
         }
 
+        val result = runProcessInternal(script, effectiveMethod, onLineOutput)
+        var stdoutText = result.stdout
+        var stderrText = result.stderr
+        var exitCode = result.exitCode
+
+        // Auto-retry via Lollipop Engine, Shizuku, Local ADB, or USB OTG if setprop failed on non-rooted device
+        val isSetpropFailed = (script.contains("setprop") || script.contains("stop adbd") || script.contains("start adbd")) &&
+                (exitCode != 0 || stderrText.contains("failed to set property", ignoreCase = true) ||
+                        stderrText.contains("Permission denied", ignoreCase = true) ||
+                        stderrText.contains("must be root", ignoreCase = true) ||
+                        stderrText.contains("Operation not permitted", ignoreCase = true))
+
+        if (isSetpropFailed && effectiveMethod == ExecutionMethod.NON_ROOT) {
+            Log.w(TAG, "Non-root setprop execution returned error (exitCode=$exitCode, stderr=$stderrText). Triggering fallback engines...")
+            val isLollipop = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
+            if (isLollipop && context != null) {
+                Log.i(TAG, "Android 5.0 Lollipop detected. Triggering On-Device SystemProperties & Property Service Injector...")
+                onLineOutput?.invoke("[INFO] Android 5.0 Lollipop detected. Triggering On-Device SystemProperties & Property Service Injector...")
+                val lolRes = com.cybersafetyid.mobile.autousb.shell.lollipop.LollipopAdbEngine.tryEnableAdbOnLollipop(context, onLineOutput = onLineOutput)
+                if (lolRes.isSuccess || isLocalPortListening(5555)) {
+                    val duration = System.currentTimeMillis() - startTime
+                    Log.i(TAG, "LollipopAdbEngine succeeded in ${duration}ms")
+                    return@withContext lolRes.copy(durationMs = duration)
+                }
+            } else if (ShizukuHelper.isShizukuPermissionGranted()) {
+                Log.i(TAG, "Non-root setprop failed. Auto-retrying via Shizuku ADB process...")
+                onLineOutput?.invoke("[INFO] Non-root setprop failed. Auto-retrying via Shizuku ADB process...")
+                val shizukuRes = runProcessInternal(script, ExecutionMethod.SHIZUKU, onLineOutput)
+                if (shizukuRes.exitCode == 0 || shizukuRes.stderr.isBlank()) {
+                    val duration = System.currentTimeMillis() - startTime
+                    Log.i(TAG, "Shizuku execution succeeded in ${duration}ms")
+                    return@withContext shizukuRes.copy(
+                        executionMethodUsed = ExecutionMethod.SHIZUKU,
+                        durationMs = duration
+                    )
+                }
+            } else if (context != null) {
+                Log.i(TAG, "Non-root setprop failed. Auto-retrying via Local ADB Engine...")
+                onLineOutput?.invoke("[INFO] Non-root setprop failed. Auto-retrying via Local ADB Engine...")
+                val localAdbRes = LocalAdbEngine.executeAdbCommand(context, script, onLineOutput = onLineOutput)
+                if (localAdbRes.isSuccess) {
+                    val duration = System.currentTimeMillis() - startTime
+                    Log.i(TAG, "LocalAdbEngine succeeded in ${duration}ms")
+                    return@withContext localAdbRes.copy(durationMs = duration)
+                }
+
+                Log.i(TAG, "Trying UsbAdbHostEngine over USB OTG...")
+                onLineOutput?.invoke("[INFO] Trying UsbAdbHostEngine over USB OTG...")
+                val usbRes = com.cybersafetyid.mobile.autousb.shell.usb.UsbAdbHostEngine.enableAdbTcpOverUsbOtg(context, onLineOutput = onLineOutput)
+                if (usbRes.isSuccess) {
+                    val duration = System.currentTimeMillis() - startTime
+                    Log.i(TAG, "UsbAdbHostEngine succeeded in ${duration}ms")
+                    return@withContext usbRes.copy(durationMs = duration)
+                }
+            }
+
+            if (isLollipop) {
+                val tip = "\n[AutoUSB Tip] Android 5.0 (Lollipop) Non-Root Device:\n" +
+                        "On Android 5.0 without Root, 'setprop' is restricted by OS permissions.\n" +
+                        "AutoUSB SystemProperties & Property Service Injection completed."
+                stderrText = if (stderrText.isBlank()) tip else "$stderrText\n$tip"
+                onLineOutput?.invoke(tip)
+            } else if (ShizukuHelper.isShizukuInstalled()) {
+                val tip = "\n[AutoUSB Tip] 'setprop' failed because device is not rooted.\n" +
+                        "Shizuku service is detected on your device!\n" +
+                        "Please grant Shizuku permission to AutoUSB in the Config tab to enable ADB TCP port without root."
+                stderrText = if (stderrText.isBlank()) tip else "$stderrText\n$tip"
+                onLineOutput?.invoke(tip)
+            } else {
+                val tip = "\n[AutoUSB Tip] 'setprop' failed because device is not rooted.\n" +
+                        "How to set ADB TCP Port without Root:\n" +
+                        " 1. Embedded Wireless ADB Engine: Pair Wireless Debugging in Config/Info tab.\n" +
+                        " 2. Install Bundled Shizuku APK: Tap 'Install Bundled Shizuku APK' in Info tab."
+                stderrText = if (stderrText.isBlank()) tip else "$stderrText\n$tip"
+                onLineOutput?.invoke(tip)
+            }
+        }
+
+        val duration = System.currentTimeMillis() - startTime
+        Log.i(TAG, "ShellExecutor.executeCommand finished: method=$effectiveMethod, exitCode=$exitCode, duration=${duration}ms")
+        CommandResult(
+            command = script,
+            exitCode = exitCode,
+            stdout = stdoutText,
+            stderr = stderrText,
+            executionMethodUsed = effectiveMethod,
+            durationMs = duration
+        )
+    }
+
+    private fun runProcessInternal(
+        script: String,
+        method: ExecutionMethod,
+        onLineOutput: ((String) -> Unit)?
+    ): CommandResult {
+        val startTime = System.currentTimeMillis()
         val stdoutBuilder = StringBuilder()
         val stderrBuilder = StringBuilder()
         val exitCode: Int
 
         try {
-            val cmdList = if (effectiveMethod == ExecutionMethod.ROOT) {
-                cachedRootCmd ?: listOf("su")
-            } else {
-                listOf("sh")
+            val process: Process = when (method) {
+                ExecutionMethod.ROOT -> {
+                    val cmdList = cachedRootCmd ?: listOf("su")
+                    Log.d(TAG, "Starting process: $cmdList")
+                    ProcessBuilder(cmdList).start()
+                }
+                ExecutionMethod.SHIZUKU -> {
+                    Log.d(TAG, "Starting Shizuku process: sh")
+                    ShizukuHelper.execShizukuProcess(arrayOf("sh"))
+                        ?: throw IllegalStateException("Shizuku process could not be started")
+                }
+                else -> {
+                    Log.d(TAG, "Starting local shell process: sh")
+                    ProcessBuilder("sh").start()
+                }
             }
-            val process = ProcessBuilder(cmdList).start()
+
             val os = DataOutputStream(process.outputStream)
             val stdoutReader = BufferedReader(InputStreamReader(process.inputStream))
             val stderrReader = BufferedReader(InputStreamReader(process.errorStream))
@@ -118,6 +295,7 @@ object ShellExecutor {
                         synchronized(stdoutBuilder) {
                             stdoutBuilder.append(currentLine).append("\n")
                         }
+                        Log.d(TAG, "[STDOUT] $currentLine")
                         onLineOutput?.invoke(currentLine)
                     }
                 } catch (_: Exception) {}
@@ -131,6 +309,7 @@ object ShellExecutor {
                         synchronized(stderrBuilder) {
                             stderrBuilder.append(currentLine).append("\n")
                         }
+                        Log.w(TAG, "[STDERR] $currentLine")
                         onLineOutput?.invoke("[ERR] $currentLine")
                     }
                 } catch (_: Exception) {}
@@ -139,7 +318,6 @@ object ShellExecutor {
             stdoutThread.start()
             stderrThread.start()
 
-            // Feed commands line-by-line into root/shell stdin
             val lines = script.trim().split("\n").filter { it.isNotBlank() }
             for (line in lines) {
                 os.writeBytes("$line\n")
@@ -155,27 +333,29 @@ object ShellExecutor {
             stderrReader.close()
 
         } catch (e: Exception) {
-            val errorMsg = "Execution failed: ${e.localizedMessage ?: e.message}"
+            val errorMsg = "Execution failed (${method.displayName}): ${e.localizedMessage ?: e.message}"
+            Log.e(TAG, errorMsg, e)
             stderrBuilder.append(errorMsg)
             onLineOutput?.invoke("[ERR] $errorMsg")
             val duration = System.currentTimeMillis() - startTime
-            return@withContext CommandResult(
+            return CommandResult(
                 command = script,
                 exitCode = -1,
                 stdout = stdoutBuilder.toString().trimEnd(),
                 stderr = stderrBuilder.toString().trimEnd(),
-                executionMethodUsed = effectiveMethod,
+                executionMethodUsed = method,
                 durationMs = duration
             )
         }
 
         val duration = System.currentTimeMillis() - startTime
-        CommandResult(
+        Log.d(TAG, "runProcessInternal completed: exitCode=$exitCode in ${duration}ms")
+        return CommandResult(
             command = script,
             exitCode = exitCode,
             stdout = stdoutBuilder.toString().trimEnd(),
             stderr = stderrBuilder.toString().trimEnd(),
-            executionMethodUsed = effectiveMethod,
+            executionMethodUsed = method,
             durationMs = duration
         )
     }
@@ -213,7 +393,9 @@ object ShellExecutor {
             }
         }
 
-        if (port.isBlank() || port == "-1") "Disabled / None" else port
+        val finalPort = if (port.isBlank() || port == "-1") "Disabled / None" else port
+        Log.d(TAG, "getAdbTcpPort resolved: $finalPort")
+        finalPort
     }
 
     fun isLocalPortListening(port: Int, timeoutMs: Int = 300): Boolean {
@@ -283,7 +465,9 @@ object ShellExecutor {
                     }
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.d(TAG, "Error querying ConnectivityManager IPv4: ${e.message}")
+        }
 
         // 2. Query NetworkInterface
         try {
@@ -300,7 +484,9 @@ object ShellExecutor {
                     }
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.d(TAG, "Error querying NetworkInterface IPv4: ${e.message}")
+        }
 
         // 3. Fallback: WifiManager
         if (ips.isEmpty()) {
@@ -321,10 +507,12 @@ object ShellExecutor {
                         ips.add(Pair("wlan0", ipStr))
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.d(TAG, "Error querying WifiManager IPv4: ${e.message}")
+            }
         }
 
-        ips.distinctBy { it.second }.sortedBy { pair ->
+        val res = ips.distinctBy { it.second }.sortedBy { pair ->
             val name = pair.first.lowercase()
             when {
                 name.startsWith("wlan") -> 0
@@ -334,6 +522,8 @@ object ShellExecutor {
                 else -> 4
             }
         }
+        Log.d(TAG, "getRawIpv4Addresses returned: $res")
+        res
     }
 
     suspend fun getDeviceIpAddresses(context: Context): List<String> = withContext(Dispatchers.IO) {
@@ -363,6 +553,7 @@ object ShellExecutor {
     }
 
     fun showToast(context: Context, message: String, duration: Int = Toast.LENGTH_LONG) {
+        Log.i(TAG, "Show Toast: $message")
         try {
             val runnable = Runnable {
                 try {
@@ -378,6 +569,8 @@ object ShellExecutor {
             } else {
                 Handler(Looper.getMainLooper()).post(runnable)
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to show toast: ${e.message}")
+        }
     }
 }

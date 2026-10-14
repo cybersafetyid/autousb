@@ -15,6 +15,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.content.ContextCompat
 import com.cybersafetyid.mobile.autousb.data.AppPreferences
 import com.cybersafetyid.mobile.autousb.service.AutoUsbService
+import com.cybersafetyid.mobile.autousb.shell.ShizukuHelper
 import com.cybersafetyid.mobile.autousb.ui.screens.MainScreen
 import com.cybersafetyid.mobile.autousb.ui.theme.AutousbTheme
 
@@ -24,17 +25,25 @@ class MainActivity : ComponentActivity() {
 
     private val requestNotificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
-            // Permission result handled, proceed to start service if configured
             checkAndStartService()
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = AppPreferences(this)
-        enableEdgeToEdge()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            enableEdgeToEdge()
+        }
 
         requestPermissionsIfNeeded()
         checkAndStartService()
+
+        try {
+            if (ShizukuHelper.isShizukuInstalled() && !ShizukuHelper.isShizukuPermissionGranted()) {
+                ShizukuHelper.requestShizukuPermission(1001)
+            }
+        } catch (_: Throwable) {}
 
         setContent {
             AutousbTheme {
@@ -70,4 +79,3 @@ fun MainActivityPreview() {
         MainScreen(prefs = AppPreferences(LocalContext.current))
     }
 }
-

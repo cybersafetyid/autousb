@@ -24,6 +24,7 @@ class CommandResultTest {
     @Test
     fun executionMethod_fromString() {
         assertEquals(ExecutionMethod.ROOT, ExecutionMethod.fromString("ROOT"))
+        assertEquals(ExecutionMethod.SHIZUKU, ExecutionMethod.fromString("SHIZUKU"))
         assertEquals(ExecutionMethod.NON_ROOT, ExecutionMethod.fromString("NON_ROOT"))
         assertEquals(ExecutionMethod.AUTO, ExecutionMethod.fromString("UNKNOWN"))
     }

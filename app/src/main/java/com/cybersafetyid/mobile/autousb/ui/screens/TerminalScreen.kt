@@ -4,7 +4,6 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
-import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -55,8 +54,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.cybersafetyid.mobile.autousb.data.AppPreferences
 import com.cybersafetyid.mobile.autousb.data.LogRepository
-import com.cybersafetyid.mobile.autousb.shell.ExecutionMethod
 import com.cybersafetyid.mobile.autousb.shell.ShellExecutor
+import com.cybersafetyid.mobile.autousb.shell.ShizukuHelper
 import com.cybersafetyid.mobile.autousb.ui.theme.AutousbTheme
 import com.cybersafetyid.mobile.autousb.ui.theme.ErrorRed
 import com.cybersafetyid.mobile.autousb.ui.theme.TerminalBackground
@@ -77,10 +76,11 @@ fun TerminalScreen(
     var inputCommand by remember { mutableStateOf("") }
     var isExecuting by remember { mutableStateOf(false) }
     var isRootActive by remember { mutableStateOf(false) }
+    var isShizukuActive by remember { mutableStateOf(false) }
 
     val terminalLines = remember {
         mutableStateListOf(
-            "AutoUSB Terminal v1.0 [Termux Style Engine]",
+            "AutoUSB Terminal v1.2 [Termux & Shizuku ADB Engine]",
             "Type a command below or tap a preset quick chip.",
             "--------------------------------------------------"
         )
@@ -89,12 +89,18 @@ fun TerminalScreen(
     fun runScriptInTerminal(scriptToRun: String) {
         if (scriptToRun.isBlank() || isExecuting) return
         isExecuting = true
-        terminalLines.add("${if (isRootActive) "#" else "$"} $scriptToRun")
+        val promptSymbol = when {
+            isRootActive -> "#"
+            isShizukuActive -> "adb$"
+            else -> "$"
+        }
+        terminalLines.add("$promptSymbol $scriptToRun")
 
         scope.launch {
             val result = ShellExecutor.executeCommand(
                 script = scriptToRun,
                 preferredMethod = currentMethod,
+                context = context,
                 onLineOutput = { line ->
                     terminalLines.add(line)
                 }
@@ -109,10 +115,23 @@ fun TerminalScreen(
 
     LaunchedEffect(Unit) {
         isRootActive = ShellExecutor.isRootAvailable()
+        isShizukuActive = ShizukuHelper.isShizukuPermissionGranted()
     }
 
     LaunchedEffect(terminalLines.size) {
         scrollState.animateScrollTo(scrollState.maxValue)
+    }
+
+    val modeTitle = when {
+        isRootActive -> "Mode: ROOT (#)"
+        isShizukuActive -> "Mode: SHIZUKU ADB (adb$)"
+        else -> "Mode: NON-ROOT ($)"
+    }
+
+    val modeColor = when {
+        isRootActive -> TerminalGreen
+        isShizukuActive -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.secondary
     }
 
     Column(
@@ -133,9 +152,9 @@ fun TerminalScreen(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = if (isRootActive) "Mode: ROOT (#)" else "Mode: NON-ROOT ($)",
+                    text = modeTitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (isRootActive) TerminalGreen else MaterialTheme.colorScheme.secondary
+                    color = modeColor
                 )
             }
 
@@ -183,7 +202,7 @@ fun TerminalScreen(
             )
             AssistChip(
                 onClick = { runScriptInTerminal("id") },
-                label = { Text("Check Root id") }
+                label = { Text("Check Shell id") }
             )
             AssistChip(
                 onClick = { runScriptInTerminal("getprop ro.product.model") },
@@ -213,7 +232,7 @@ fun TerminalScreen(
                     terminalLines.forEach { line ->
                         val textColor = when {
                             line.startsWith("[ERR]") || line.contains("failed", ignoreCase = true) -> ErrorRed
-                            line.startsWith("$") || line.startsWith("#") -> Color.White
+                            line.startsWith("$") || line.startsWith("#") || line.startsWith("adb$") -> Color.White
                             line.startsWith("[Process completed") -> TerminalGreen
                             else -> TerminalGreen
                         }
@@ -237,12 +256,18 @@ fun TerminalScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val promptLabel = when {
+                isRootActive -> "# "
+                isShizukuActive -> "adb$ "
+                else -> "$ "
+            }
+
             Text(
-                text = if (isRootActive) "# " else "$ ",
+                text = promptLabel,
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Bold,
-                fontSize = 18.sp,
-                color = if (isRootActive) TerminalGreen else MaterialTheme.colorScheme.secondary
+                fontSize = 16.sp,
+                color = modeColor
             )
 
             OutlinedTextField(

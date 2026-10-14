@@ -1,5 +1,6 @@
 package com.cybersafetyid.mobile.autousb.ui.screens
 
+import android.os.Build
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -14,8 +15,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -32,6 +38,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,10 +50,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.cybersafetyid.mobile.autousb.data.AppPreferences
+import com.cybersafetyid.mobile.autousb.data.LogRepository
 import com.cybersafetyid.mobile.autousb.shell.ExecutionMethod
 import com.cybersafetyid.mobile.autousb.shell.ShellExecutor
+import com.cybersafetyid.mobile.autousb.shell.ShizukuHelper
 import com.cybersafetyid.mobile.autousb.ui.theme.AutousbTheme
 import com.cybersafetyid.mobile.autousb.ui.theme.TerminalGreen
+import com.cybersafetyid.mobile.autousb.utils.BundledApkInstaller
+import kotlinx.coroutines.launch
 
 @Composable
 fun ConfigScreen(
@@ -54,6 +65,7 @@ fun ConfigScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     val currentAutoStart by prefs.autoStartOnBoot.collectAsState()
     val currentAutoExec by prefs.autoExecuteOnStart.collectAsState()
@@ -74,6 +86,9 @@ fun ConfigScreen(
     var portText by remember(currentPort) { mutableStateOf(currentPort.toString()) }
     var showNotif by remember(currentShowNotif) { mutableStateOf(currentShowNotif) }
     var showIpToast by remember(currentShowIpToast) { mutableStateOf(currentShowIpToast) }
+
+    var isShizukuGranted by remember { mutableStateOf(ShizukuHelper.isShizukuPermissionGranted()) }
+    var isShizukuInstalled by remember { mutableStateOf(ShizukuHelper.isShizukuInstalled()) }
 
     Column(
         modifier = modifier
@@ -234,6 +249,79 @@ fun ConfigScreen(
             }
         }
 
+        // --- Always-Visible Quick Activation Tools Card ---
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Build,
+                        contentDescription = "Manual Fallback Tools",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Quick ADB Activation & OTG Tools",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Always accessible for manual execution, fallback when Root has issues, or activating USB ADB Host to another device:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Button(
+                    onClick = {
+                        scope.launch {
+                            val script = ShellExecutor.DEFAULT_ADB_SCRIPT
+                            val res = ShellExecutor.executeCommand(script, selectedMethod, context = context)
+                            LogRepository.addLog(res)
+                            val port = ShellExecutor.getAdbTcpPort()
+                            if (ShellExecutor.isAdbPortActive(port)) {
+                                val toastMsg = ShellExecutor.buildAdbIpToastMessage(context, port)
+                                ShellExecutor.showToast(context, toastMsg)
+                            } else {
+                                Toast.makeText(context, "Result:\n${res.stdout.ifBlank { res.stderr }}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = TerminalGreen,
+                        contentColor = Color.Black
+                    )
+                ) {
+                    Icon(imageVector = Icons.Default.PlayArrow, contentDescription = null)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Activate ADB Port 5555 (Local)", fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            val res = com.cybersafetyid.mobile.autousb.shell.usb.UsbAdbHostEngine.enableAdbTcpOverUsbOtg(context)
+                            Toast.makeText(context, res.stdout.ifBlank { res.stderr }, Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(imageVector = Icons.Default.Usb, contentDescription = null)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Activate via USB OTG Host (to Target HP)")
+                }
+            }
+        }
+
         // --- Execution Method Selection Card ---
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -269,8 +357,10 @@ fun ConfigScreen(
                                 fontWeight = FontWeight.SemiBold
                             )
                             val desc = when (method) {
-                                ExecutionMethod.AUTO -> "Auto-detect Root (su), fallback to Non-Root (sh)"
-                                ExecutionMethod.ROOT -> "Always execute with SuperUser root permissions (su)"
+                                ExecutionMethod.AUTO -> "Auto-detect Root, Built-in Wireless ADB, Shizuku, or Shell"
+                                ExecutionMethod.ROOT -> "SuperUser root permissions (su)"
+                                ExecutionMethod.LOCAL_ADB -> "Built-in Wireless ADB Protocol over 127.0.0.1"
+                                ExecutionMethod.SHIZUKU -> "Shizuku ADB shell process (uid=2000) - Android 6.0+"
                                 ExecutionMethod.NON_ROOT -> "Standard local shell process (sh) without root"
                             }
                             Text(
@@ -278,6 +368,61 @@ fun ConfigScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                    }
+                }
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                isShizukuInstalled = ShizukuHelper.isShizukuInstalled()
+                                if (isShizukuInstalled) {
+                                    if (!isShizukuGranted) {
+                                        ShizukuHelper.requestShizukuPermission(1001)
+                                    }
+                                    isShizukuGranted = ShizukuHelper.isShizukuPermissionGranted()
+                                    if (isShizukuGranted) {
+                                        Toast.makeText(context, "Shizuku Permission Granted!", Toast.LENGTH_SHORT).show()
+                                    }
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "Shizuku service not running. Tap 'Install Shizuku' to install bundled APK.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(imageVector = Icons.Default.Security, contentDescription = null)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = when {
+                                    isShizukuGranted -> "Shizuku Active"
+                                    isShizukuInstalled -> "Grant Shizuku"
+                                    else -> "Check Shizuku"
+                                }
+                            )
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    val res = BundledApkInstaller.installBundledShizuku(context)
+                                    Toast.makeText(context, res, Toast.LENGTH_LONG).show()
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(imageVector = Icons.Default.Download, contentDescription = null)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Install Shizuku")
                         }
                     }
                 }

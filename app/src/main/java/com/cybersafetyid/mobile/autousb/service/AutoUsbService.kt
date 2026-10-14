@@ -20,6 +20,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.cybersafetyid.mobile.autousb.MainActivity
@@ -51,12 +52,31 @@ class AutoUsbService : Service() {
 
     private val networkReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            triggerNetworkCheck()
+            val action = intent?.action
+            Log.i(TAG, "networkReceiver.onReceive action=$action")
+            try {
+                intent?.extras?.keySet()?.forEach { key ->
+                    Log.d(TAG, "Intent Extra [$action]: $key = ${intent.extras?.get(key)}")
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "Could not dump intent extras: ${e.message}")
+            }
+
+            if (action == "android.hardware.usb.action.USB_STATE" ||
+                action == "android.hardware.usb.action.USB_DEVICE_ATTACHED" ||
+                action == "android.hardware.usb.action.USB_ACCESSORY_ATTACHED" ||
+                action == Intent.ACTION_POWER_CONNECTED) {
+                Log.i(TAG, "USB / Power event detected ($action). Triggering executeAutoScript()...")
+                executeAutoScript()
+            } else {
+                triggerNetworkCheck()
+            }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
+        Log.i(TAG, "AutoUsbService.onCreate initialized.")
         prefs = AppPreferences(this)
         _isRunning.value = true
         prefs.setServiceRunning(true)
@@ -66,7 +86,9 @@ class AutoUsbService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
+        Log.i(TAG, "AutoUsbService.onStartCommand action=$action, startId=$startId")
         if (action == ACTION_STOP_SERVICE) {
+            Log.i(TAG, "AutoUsbService stopping self via ACTION_STOP_SERVICE.")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -84,41 +106,54 @@ class AutoUsbService : Service() {
         serviceScope.launch {
             val script = prefs.getAutoExecuteScript()
             val method = prefs.getExecutionMethod()
+            Log.i(TAG, "executeAutoScript method=$method, script:\n$script")
             _lastExecutionStatus.value = "Executing auto-script..."
 
-            val result = ShellExecutor.executeCommand(script, method)
+            val result = ShellExecutor.executeCommand(script, method, context = this@AutoUsbService)
             LogRepository.addLog(result)
-
-            if (prefs.getAutoInstallUsbApk()) {
-                val usbSummary = UsbInstaller.scanAndInstallApksFromUsb(this@AutoUsbService, prefs)
-                if (usbSummary.isNotBlank()) {
-                    _lastExecutionStatus.value = usbSummary
-                }
-            }
+            Log.i(TAG, "executeAutoScript command result: exitCode=${result.exitCode}, stdout='${result.stdout}', stderr='${result.stderr}'")
 
             val port = ShellExecutor.getAdbTcpPort()
             val isAdbActive = ShellExecutor.isAdbPortActive(port)
 
-            if (isAdbActive) {
-                triggerNetworkCheck(forceToast = false)
-                startIpDiscoveryJob(maxAttempts = 30, intervalMs = 1500L)
+            val statusText = if (isAdbActive) {
+                val ipPairs = ShellExecutor.getRawIpv4Addresses(this@AutoUsbService)
+                if (ipPairs.isNotEmpty()) {
+                    "ADB Active: adb connect ${ipPairs.first().second}:$port"
+                } else {
+                    "ADB Active on Port $port"
+                }
             } else if (result.isSuccess) {
-                val statusText = "ADB Port: $port"
-                _lastExecutionStatus.value = statusText
-                updateNotification(statusText)
+                "ADB Port: $port"
             } else {
                 val rawErr = result.stderr.trim()
                 val isRootErr = rawErr.contains("must be root", ignoreCase = true) ||
                         rawErr.contains("Root permission", ignoreCase = true) ||
                         rawErr.contains("Permission denied", ignoreCase = true)
                 val errDetail = when {
-                    isRootErr -> "Root access required to enable ADB port ($rawErr)"
-                    rawErr.isNotBlank() -> rawErr.take(120)
+                    isRootErr -> "Root/Shizuku required ($rawErr)"
+                    rawErr.isNotBlank() -> rawErr.take(100)
                     else -> "Exit code ${result.exitCode}"
                 }
-                val statusText = "Failed: $errDetail"
-                _lastExecutionStatus.value = statusText
-                updateNotification(statusText)
+                "Failed: $errDetail"
+            }
+
+            Log.i(TAG, "executeAutoScript status text resolved: $statusText")
+            _lastExecutionStatus.value = statusText
+
+            if (prefs.getAutoInstallUsbApk()) {
+                val usbSummary = UsbInstaller.scanAndInstallApksFromUsb(this@AutoUsbService, prefs)
+                if (usbSummary.isNotBlank() && !usbSummary.startsWith("No APK files found")) {
+                    Log.i(TAG, "USB installer summary: $usbSummary")
+                    _lastExecutionStatus.value = "$statusText | USB: $usbSummary"
+                }
+            }
+
+            if (isAdbActive) {
+                triggerNetworkCheck(forceToast = false)
+                startIpDiscoveryJob(maxAttempts = 30, intervalMs = 1500L)
+            } else {
+                updateNotification(_lastExecutionStatus.value)
             }
         }
     }
@@ -135,6 +170,7 @@ class AutoUsbService : Service() {
                 val statusText = "ADB Active: adb connect $primaryIp:$port"
                 val toastMessage = ShellExecutor.buildAdbIpToastMessage(this@AutoUsbService, port)
 
+                Log.i(TAG, "triggerNetworkCheck ADB Active: $statusText (toastMessage: $toastMessage)")
                 _lastExecutionStatus.value = statusText
                 updateNotification(
                     contentText = "adb connect $primaryIp:$port",
@@ -151,6 +187,7 @@ class AutoUsbService : Service() {
                 }
             } else {
                 val statusText = "ADB Wireless Active on Port: $port"
+                Log.i(TAG, "triggerNetworkCheck ADB Active without IP: $statusText")
                 _lastExecutionStatus.value = statusText
                 updateNotification(statusText, title = "AutoUSB - ADB Active")
                 lastNotifiedIpSummary = ""
@@ -174,6 +211,7 @@ class AutoUsbService : Service() {
                     val statusText = "ADB Active: adb connect $primaryIp:$port"
                     val toastMessage = ShellExecutor.buildAdbIpToastMessage(this@AutoUsbService, port)
 
+                    Log.i(TAG, "IP Discovery Job resolved IP on attempt $attempt: $statusText")
                     _lastExecutionStatus.value = statusText
                     updateNotification(
                         contentText = "adb connect $primaryIp:$port",
@@ -203,10 +241,12 @@ class AutoUsbService : Service() {
 
             networkCallback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
+                    Log.d(TAG, "ConnectivityManager.NetworkCallback.onAvailable")
                     triggerNetworkCheck()
                 }
 
                 override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                    Log.d(TAG, "ConnectivityManager.NetworkCallback.onLinkPropertiesChanged")
                     triggerNetworkCheck()
                 }
 
@@ -215,6 +255,7 @@ class AutoUsbService : Service() {
                 }
 
                 override fun onLost(network: Network) {
+                    Log.d(TAG, "ConnectivityManager.NetworkCallback.onLost")
                     triggerNetworkCheck()
                 }
             }
@@ -236,7 +277,9 @@ class AutoUsbService : Service() {
                     connectivityManager?.registerNetworkCallback(request, it)
                 }
             }
-        } catch (_: Exception) {}
+        } catch (e: Exception) {
+            Log.e(TAG, "Error registering NetworkCallback: ${e.message}", e)
+        }
     }
 
     private fun registerNetworkBroadcastReceiver() {
@@ -247,6 +290,10 @@ class AutoUsbService : Service() {
                 addAction(ConnectivityManager.CONNECTIVITY_ACTION)
                 addAction("android.net.wifi.STATE_CHANGE")
                 addAction("android.net.wifi.WIFI_STATE_CHANGED")
+                addAction("android.hardware.usb.action.USB_STATE")
+                addAction("android.hardware.usb.action.USB_DEVICE_ATTACHED")
+                addAction("android.hardware.usb.action.USB_ACCESSORY_ATTACHED")
+                addAction(Intent.ACTION_POWER_CONNECTED)
                 addAction(Intent.ACTION_SCREEN_ON)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -255,6 +302,7 @@ class AutoUsbService : Service() {
                 registerReceiver(networkReceiver, filter)
             }
             isNetworkReceiverRegistered = true
+            Log.d(TAG, "registerNetworkBroadcastReceiver registered successfully.")
         } catch (_: Exception) {
             try {
                 registerReceiver(networkReceiver, IntentFilter().apply {
@@ -262,7 +310,9 @@ class AutoUsbService : Service() {
                     addAction(ConnectivityManager.CONNECTIVITY_ACTION)
                 })
                 isNetworkReceiverRegistered = true
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to register networkBroadcastReceiver: ${e.message}", e)
+            }
         }
     }
 
@@ -461,6 +511,7 @@ class AutoUsbService : Service() {
     }
 
     override fun onDestroy() {
+        Log.i(TAG, "AutoUsbService onDestroy.")
         unregisterNetworkCallback()
         unregisterNetworkBroadcastReceiver()
         ipDiscoveryJob?.cancel()
@@ -473,6 +524,7 @@ class AutoUsbService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     companion object {
+        private const val TAG = "AutoUSB"
         const val CHANNEL_ID = "autousb_service_channel_v2"
         const val NOTIFICATION_ID = 1001
         const val ACTION_STOP_SERVICE = "com.cybersafetyid.mobile.autousb.STOP_SERVICE"
@@ -484,6 +536,7 @@ class AutoUsbService : Service() {
         val lastExecutionStatus: StateFlow<String> = _lastExecutionStatus.asStateFlow()
 
         fun startService(context: Context) {
+            Log.i(TAG, "AutoUsbService.startService called.")
             val intent = Intent(context, AutoUsbService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 ContextCompat.startForegroundService(context, intent)
@@ -493,11 +546,13 @@ class AutoUsbService : Service() {
         }
 
         fun stopService(context: Context) {
+            Log.i(TAG, "AutoUsbService.stopService called.")
             val intent = Intent(context, AutoUsbService::class.java)
             context.stopService(intent)
         }
 
         fun triggerExecute(context: Context) {
+            Log.i(TAG, "AutoUsbService.triggerExecute called.")
             val intent = Intent(context, AutoUsbService::class.java)
             context.startService(intent)
         }
