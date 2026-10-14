@@ -45,18 +45,36 @@ jobs:
           echo "APK_FILE=$APK_PATH" >> $GITHUB_ENV
           echo "Found APK at: $APK_PATH"
 
-      - name: Generate Changelog Notes
-        id: build_changelog
+      - name: Extract Release Notes from CHANGELOG.md
+        id: extract_notes
         run: |
-          echo "RELEASE_TAG=${{ github.ref_name || inputs.tag_name }}" >> $GITHUB_ENV
+          VERSION="${{ github.ref_name || inputs.tag_name }}"
+          CLEAN_VER="${VERSION#v}"
+          echo "RELEASE_TAG=$VERSION" >> $GITHUB_ENV
+          echo "Extracting release notes for version $CLEAN_VER from CHANGELOG.md..."
+          python3 -c "
+          import re
+          from pathlib import Path
+
+          changelog_path = Path('CHANGELOG.md')
+          if changelog_path.exists():
+              changelog = changelog_path.read_text(encoding='utf-8')
+              pattern = r'## \[' + re.escape('$CLEAN_VER') + r'\][^\n]*\n(.*?)(?=\n## \[|\Z)'
+              match = re.search(pattern, changelog, re.DOTALL)
+              notes = match.group(1).strip() if match else 'AutoUSB Release $VERSION'
+          else:
+              notes = 'AutoUSB Release $VERSION'
+          
+          Path('RELEASE_NOTES.md').write_text(notes, encoding='utf-8')
+          "
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name || inputs.tag_name }}
           name: AutoUSB Release ${{ github.ref_name || inputs.tag_name }}
+          body_path: RELEASE_NOTES.md
           files: ${{ env.APK_FILE }}
-          generate_release_notes: true
           draft: false
           prerelease: false
         env:
