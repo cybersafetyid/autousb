@@ -17,6 +17,8 @@ out/
 build/
 /build
 **/build/
+release/
+**/release/
 
 # Android Studio / IntelliJ IDEA
 .idea/
